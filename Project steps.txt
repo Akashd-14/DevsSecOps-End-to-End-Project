@@ -1,0 +1,289 @@
+
+step 1: Create Jenkins Server
+	1 Install terraform and aws cli
+	
+	2 run aws configure
+	
+	3 clone the repo to local
+		git clone 
+		
+	4 Go to Jenkins-Server-TF directory
+	
+	5 Make changes in backend.tf to change bucket name and in variables.tfvars to change key name
+	
+	6 run terraform commands to create jenkins server
+		terraform init
+		terraform validate
+		terraform plan -var-file=variables.tfvars
+		terraform apply -var-file=variables.tfvars --auto-approve
+		
+
+step 2: Access ssh of jenkins server
+	1 run below commands to check our packages installed or not
+		jenkins --version
+		docker --version
+		terraform --version
+		aws --version
+		trivy --version
+		kubectl
+		eksctl	
+		
+	2 check sonarqube container ie running or not using
+		docker ps
+		
+	3 configure aws credentials
+		aws configure
+	
+step 3: setup jenkins server
+	1 connect jenkins server <IP-address>:8080
+	
+	2 Get jenkins intial password
+		sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+	3 Install suggested plugins
+	
+	4 Add some more plugins
+		Go to Manage Jinkins>Plugins>Available plugins
+		aws credentials
+		pipeline:aws steps
+		pipeline:stage view
+		Docker
+		Docker Commons
+		Docker Pipeline
+		Docker API
+		docker-build-step
+		Eclipse Temurin installer
+		NodeJS
+		OWASP Dependency-Check
+		SonarQube Scanner
+		
+	5 Add AWS credentials
+		Go to Manage Jenkins>Credentials>global
+		kind = aws credentials
+		add ID, access key, secret access key
+
+step 4: Cluster setup		
+	1 Go to jenkins server and create cluster
+		eksctl create cluster --name Three-Tier-K8s-EKS-Cluster --region us-east-1 --node-type t2.medium --nodes-min 2 --nodes-max 2
+		
+		aws eks update-kubeconfig --region us-east-1 --name Three-Tier-K8s-EKS-Cluster
+		
+	2 check cluster ie ready or not
+		kubectl get nodes
+		kubectl get all
+		
+	3 Configure load balancer for our cluster
+		a) Download the policy for the LoadBalancer prerequisite.
+			curl -O https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.5.4/docs/install/iam_policy.json
+		
+		b) Create the IAM policy using the below command
+			aws iam create-policy --policy-name AWSLoadBalancerControllerIAMPolicy --policy-document file://iam_policy.json
+			
+		c) Create OIDC Provider
+			eksctl utils associate-iam-oidc-provider --region=us-east-1 --cluster=Three-Tier-K8s-EKS-Cluster --approve
+		
+		d) Create a Service Account by using below command and replace your account ID with your one
+			eksctl create iamserviceaccount --cluster=Three-Tier-K8s-EKS-Cluster --namespace=kube-system --name=aws-load-balancer-controller --role-name AmazonEKSLoadBalancerControllerRole --attach-policy-arn=arn:aws:iam::<your_account_id>:policy/AWSLoadBalancerControllerIAMPolicy --approve --region=us-east-1
+			
+			ex-
+			eksctl create iamserviceaccount --cluster=Three-Tier-K8s-EKS-Cluster --namespace=kube-system --name=aws-load-balancer-controller --role-name AmazonEKSLoadBalancerControllerRole --attach-policy-arn=arn:aws:iam::992382710724:policy/AWSLoadBalancerControllerIAMPolicy --approve --region=us-east-1
+
+		e) Deploy AWS LoadBalancer controller
+			sudo snap install helm --classic
+			helm repo add eks https://aws.github.io/eks-charts
+			helm repo update eks
+			helm install aws-load-balancer-controller eks/aws-load-balancer-controller -n kube-system --set clusterName=my-cluster --set serviceAccount.create=false --set serviceAccount.name=aws-load-balancer-controller
+		
+		f) Check load-balancer-controller pods are running or not
+			kubectl get deployment -n kube-system aws-load-balancer-controller
+			
+			If the pods are getting Error or CrashLoopBackOff, then use the below command
+			helm upgrade -i aws-load-balancer-controller eks/aws-load-balancer-controller \
+				--set clusterName=<cluster-name> \
+				--set serviceAccount.create=false \
+				--set serviceAccount.name=aws-load-balancer-controller \
+				--set region=us-west-1 --set vpcId=<vpc#> -n kube-system
+				
+step 5: Create and configure AWS ECR repositories
+		1 Create AWS ECR repositories for frontend and backend
+		2 Configure backend repository with jenkins server using 
+			aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 992382710724.dkr.ecr.us-east-1.amazonaws.com
+			
+step 6: Install & Configure ArgoCD
+		1 Create namespace
+			kubectl create namespace three-tier
+			
+		2 Our two ECR repositories are private. So, when we try to push images to the ECR Repos it will give us   the error Imagepullerror. We will create a secret for our ECR Repo
+			kubectl create secret generic ecr-registry-secret \
+			--from-file=.dockerconfigjson=${HOME}/.docker/config.json \
+			--type=kubernetes.io/dockerconfigjson --namespace three-tier
+			
+		3 Check secrets are created or not
+			kubectl get secrets -n three-tier
+			
+		4 Install argoCD
+			kubectl create namespace argocd
+			kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.4.7/manifests/install.yaml
+			
+		5 Check argoCD is running or not
+			kubectl get pods -n argocd
+			
+		6 Expose argoCD server as LoadBalancer
+			kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
+			
+		7 Get the password for our argoCD server to perform the deployment
+			a) sudo apt install jq -y
+			
+			b) export ARGOCD_SERVER='kubectl get svc argocd-server -n argocd -o json | jq - raw-output '.status.loadBalancer.ingress[0].hostname''
+			
+			c) export ARGO_PWD='kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d'
+			
+			d) echo $ARGO_PWD
+			
+			e)  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+			
+			f) login to argoCD Dashboard using loadBalancer dns
+				username = admin
+				password = 
+				
+step 7: Configure sonarqube server
+		1 Login to sonarqube
+			<Jenkins server IP>:9000
+			username = admin
+			password = admin
+			
+		2 Generate sonarqube token
+			Go to Administration>Security>User>Tokens>Update Token
+			Give name and generate
+			squ_0da05319e14b29973e1e8a06d61a25c69d98c947
+			
+		3 Configure Webhook in sonarqube
+			Go to Administration>Configuration>Webhooks>Create
+				name = soanr-webhook
+				url = http://<jenkins-server-IP>:8080/sonarqube-webhook/
+				
+		4 Create project for frontend
+			Go to Project>Manually>
+			name = Three-tier-frontend
+			setup
+			manually
+			Use existing token <providem previously created token>
+			continue
+			Select Other
+			Select Linux
+			Copy Execute the Scanner
+				sonar-scanner \
+					-Dsonar.projectKey=Three-tier-frontend \
+					-Dsonar.sources=. \
+					-Dsonar.host.url=http://54.160.237.137:9000 \
+					-Dsonar.login=squ_0da05319e14b29973e1e8a06d61a25c69d98c947
+		
+		5 Create project for backend
+			Go to Project>Manually>
+			name = Three-tier-backend
+			setup
+			manually
+			Use existing token <providem previously created token>
+			continue
+			Select Other
+			Select Linux
+			Copy Execute the Scanner
+				sonar-scanner \
+					-Dsonar.projectKey=Three-tier-backend \
+					-Dsonar.sources=. \
+					-Dsonar.host.url=http://54.160.237.137:9000 \
+					-Dsonar.login=squ_0da05319e14b29973e1e8a06d61a25c69d98c947			
+			
+
+step 8: Add Credentials in Jenkins
+		1 Create Credential for sonarqube in jenkins
+			Go to Dashboard>Manage Jenkins>Credentials>Secret text
+			Secret = add sonar token
+			ID = sonar-token
+			
+		2 Create Credential for Github in jenkins
+			Go to Dashboard>Manage Jenkins>Credentials>Secret text
+			Secret = add github pat token
+			ID = github
+		
+		3 Create Credential for AWS Account in jenkins
+			Go to Dashboard>Manage Jenkins>Credentials>Secret text
+			Secret = AWS Account-ID
+			ID = Account-ID	
+			
+		4 Create Credential for Frontend ECR Repo in jenkins
+			Go to Dashboard>Manage Jenkins>Credentials>Secret text
+			Secret = Frontend ECR Repo name
+			ID = ECR-REPO1	
+			
+		5 Create Credential for Backend ECR Repo in jenkins
+			Go to Dashboard>Manage Jenkins>Credentials>Secret text
+			Secret = Backend ECR Repo name
+			ID = ECR-REPO2	
+			
+		6 Create Credential for Github username in jenkins
+			Go to Dashboard>Manage Jenkins>Credentials>username and password
+			username = Github username
+			password = Github password
+			ID = GITHUB
+			
+step 9: Configure installed plugins
+		Go to Dashboard -> Manage Jenkins -> Tools
+			a) configure java
+				JDK installations
+					JDK
+					Name
+						jdk
+
+					Install automatically
+						Install from adoptium.net
+						Version
+							jdk-17.0.1+12
+			
+			b) SonarQube Scanner installations
+				SonarQube Scanner
+				Name
+					sonar-scanner
+
+				Install automatically
+					Install from Maven Central
+					Version
+						SonarQube Scanner 7.0.1.4817
+						
+			c) NodeJS installations
+				NodeJS
+					Name
+						nodejs
+
+					Install automatically
+						Install from nodejs.org
+						Version
+							NodeJS 14.0.0
+
+			d) Dependency-Check installations
+				Dependency-Check
+				Name
+					DP-Check
+					Install automatically
+						Install from github.com
+						Version
+							dependency-check 12.0.2
+
+			e) Docker installations
+				Docker
+				Name
+					docker
+					Install automatically
+						Download from docker.com
+						Docker version
+							latest
+
+step 10: Set Path for sonarqube in jenkins
+			Go to Dashboard -> Manage Jenkins -> System
+			Search for SonarQube installations
+				SonarQube installations
+					Name
+						sonar server
+					Server URL
+						http://<jenkins-server-IP>:9000
+					Server authentication token
+						sonar-token
