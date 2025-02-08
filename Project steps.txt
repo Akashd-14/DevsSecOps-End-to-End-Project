@@ -282,7 +282,7 @@ step 10: Set Path for sonarqube in jenkins
 			Search for SonarQube installations
 				SonarQube installations
 					Name
-						sonar server
+						sonar-server
 					Server URL
 						http://<jenkins-server-IP>:9000
 					Server authentication token
